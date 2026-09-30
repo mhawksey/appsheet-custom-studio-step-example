@@ -1,0 +1,27 @@
+{
+  "name": "appsheet-custom-studio-step-example",
+  "version": "1.0.0",
+  "description": "AppSheet custom step and trigger extensions for Google Workspace Studio",
+  "main": "src/Code.js",
+  "scripts": {
+    "test": "node --check src/Code.js && node --check src/AppSheetApp.js",
+    "push": "clasp push",
+    "pull": "clasp pull",
+    "status": "clasp status",
+    "deploy": "clasp deploy",
+    "open": "clasp open"
+  },
+  "keywords": [
+    "google-workspace-studio",
+    "workspace-studio",
+    "appsheet",
+    "google-apps-script",
+    "clasp",
+    "card-service"
+  ],
+  "author": "",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "@types/google-apps-script": "^1.0.89"
+  }
+}

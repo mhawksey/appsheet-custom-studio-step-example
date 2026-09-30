@@ -1,0 +1,16 @@
+# Clasp ignore configuration
+# Prevents uploading local configurations, documentation, and agent skills to Google Apps Script
+
+.env_ex.js
+**/.env_ex.js
+.clasp.json
+.git/**
+.github/**
+.agents/**
+.gemini/**
+docs/**
+node_modules/**
+package.json
+package-lock.json
+*.md
+images/**

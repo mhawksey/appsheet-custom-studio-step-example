@@ -1,0 +1,7 @@
+/docs
+.clasp.json
+.env.js
+**/.env.js
+src/.env.js
+node_modules/
+npm-debug.log*

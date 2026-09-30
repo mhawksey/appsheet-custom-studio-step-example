@@ -1,0 +1,5 @@
+const CONFIG = {
+  APP_ID: 'YOUR_APP_ID',
+  APP_KEY: 'YOUR_APP_KEY',
+  TEST_TABLE: 'YOUR_TABLE_NAME'
+}

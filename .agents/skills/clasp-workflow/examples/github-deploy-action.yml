@@ -1,0 +1,48 @@
+# GitHub Actions Workflow: Automated Clasp Deployment
+# Place this file in `.github/workflows/deploy.yml` in your repository.
+
+name: Deploy Add-on to Apps Script
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci || npm install
+
+      - name: Setup Clasp Authentication
+        env:
+          CLASPRC_JSON: ${{ secrets.CLASPRC_JSON }}
+          CLASP_JSON: ${{ secrets.CLASP_JSON }}
+        run: |
+          echo "$CLASPRC_JSON" > ~/.clasprc.json
+          echo "$CLASP_JSON" > .clasp.json
+
+      - name: Install Clasp Globally
+        run: npm install -g @google/clasp
+
+      - name: Validate Manifest Schema
+        run: |
+          node -e "JSON.parse(require('fs').readFileSync('appsscript.json', 'utf8'))"
+
+      - name: Push to Apps Script
+        run: clasp push --force
+
+      - name: Create Version & Deploy (Optional)
+        run: |
+          clasp version "Auto-deploy: ${{ github.sha }}"

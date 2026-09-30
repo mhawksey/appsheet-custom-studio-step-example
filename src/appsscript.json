@@ -1,0 +1,240 @@
+{
+  "timeZone": "America/Los_Angeles",
+  "exceptionLogging": "STACKDRIVER",
+  "runtimeVersion": "V8",
+  "oauthScopes": [
+    "https://www.googleapis.com/auth/script.locale",
+    "https://www.googleapis.com/auth/script.external_request"
+  ],
+  "urlFetchWhitelist": [
+    "https://api.appsheet.com/"
+  ],
+  "addOns": {
+    "common": {
+      "name": "AppSheet Utilities for Studio",
+      "logoUrl": "https://www.gstatic.com/images/branding/product/1x/appsheet_64dp.png",
+      "useLocaleFromApp": true
+    },
+    "flows": {
+      "workflowElements": [
+        {
+          "id": "appsheet_add_rows",
+          "state": "ACTIVE",
+          "name": "Add Rows in AppSheet",
+          "description": "Adds one or more rows to a specified AppSheet table.",
+          "workflowAction": {
+            "inputs": [
+              {
+                "id": "appId",
+                "description": "AppSheet App ID",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              },
+              {
+                "id": "accessKey",
+                "description": "AppSheet Application Access Key",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              },
+              {
+                "id": "tableName",
+                "description": "Name of the table to add rows to",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              },
+              {
+                "id": "rowsData",
+                "description": "A JSON array of row objects to add",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "id": "addedRow",
+                "description": "The newly added row with individual column fields.",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "resourceType": {
+                    "workflowResourceDefinitionId": "appsheet_row_resource"
+                  }
+                }
+              },
+              {
+                "id": "addedRows",
+                "description": "The full rows that were added, including any server-computed values.",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              }
+            ],
+            "onConfigFunction": "onConfigAddRows",
+            "onExecuteFunction": "onExecuteAddRows"
+          }
+        },
+        {
+          "id": "appsheet_update_rows",
+          "state": "ACTIVE",
+          "name": "Update Rows in AppSheet",
+          "description": "Updates one or more rows in a specified AppSheet table. Rows must include key field values.",
+          "workflowAction": {
+            "inputs": [
+              {
+                "id": "appId",
+                "description": "AppSheet App ID",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              },
+              {
+                "id": "accessKey",
+                "description": "AppSheet Application Access Key",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              },
+              {
+                "id": "tableName",
+                "description": "Name of the table to update rows in",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              },
+              {
+                "id": "rowsData",
+                "description": "A JSON array of row objects to update. Each object must include the table's key.",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "id": "updatedRow",
+                "description": "The updated row with individual column fields.",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "resourceType": {
+                    "workflowResourceDefinitionId": "appsheet_row_resource"
+                  }
+                }
+              },
+              {
+                "id": "updatedRows",
+                "description": "A confirmation of the rows submitted for update.",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              }
+            ],
+            "onConfigFunction": "onConfigUpdateRows",
+            "onExecuteFunction": "onExecuteUpdateRows"
+          }
+        },
+        {
+          "id": "appsheet_find_rows",
+          "state": "ACTIVE",
+          "name": "Find Rows in AppSheet",
+          "description": "Finds rows in a table using a selector expression or by specific key values.",
+          "workflowAction": {
+            "inputs": [
+              {
+                "id": "appId",
+                "description": "AppSheet App ID",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              },
+              {
+                "id": "accessKey",
+                "description": "AppSheet Application Access Key",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              },
+              {
+                "id": "tableName",
+                "description": "Name of the table to find rows in",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              },
+              {
+                "id": "selector",
+                "description": "Optional. An AppSheet expression like FILTER() or SELECT() to find specific rows.",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              },
+              {
+                "id": "rowsData",
+                "description": "Optional. A JSON array of row key values to find. Use instead of a selector.",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "id": "firstRow",
+                "description": "The first matching row found with individual column fields.",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "resourceType": {
+                    "workflowResourceDefinitionId": "appsheet_row_resource"
+                  }
+                }
+              },
+              {
+                "id": "foundRows",
+                "description": "A JSON array of the rows found by the selector.",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "STRING"
+                }
+              },
+              {
+                "id": "rowCount",
+                "description": "The number of rows found.",
+                "cardinality": "SINGLE",
+                "dataType": {
+                  "basicType": "INTEGER"
+                }
+              }
+            ],
+            "onConfigFunction": "onConfigFindRows",
+            "onExecuteFunction": "onExecuteFindRows"
+          }
+        }
+      ],
+      "workflowResourceDefinitions": [
+        {
+          "id": "appsheet_row_resource",
+          "name": "AppSheet Row",
+          "providerFunction": "onDynamicAppSheetRowProvider",
+          "resourceType": "DYNAMIC"
+        }
+      ],
+      "dynamicResourceDefinitionProvider": "onDynamicAppSheetRowDefinition"
+    }
+  }
+}
