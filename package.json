@@ -1,6 +1,6 @@
 {
   "name": "appsheet-custom-studio-step-example",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AppSheet custom step and trigger extensions for Google Workspace Studio",
   "main": "src/Code.js",
   "scripts": {

@@ -255,14 +255,7 @@ Because Studio does not yet support repeated arrays of custom resource chips, ou
 
 Because Studio custom steps run on Google Workspace Add-on infrastructure, testing is fast:
 
-1. **Either Copy with Apps Script project or clone the repo and push via clasp**:
-
-```sh
-git clone https://github.com/mhawksey/appsheet-custom-studio-step-example.git
-cd appsheet-custom-studio-step-example
-clasp login
-clasp push
-```
+1. Either [Copy with Apps Script project](https://script.google.com/home/projects/1EM4vv7-gJFM2tKOYwDAMKMmrWPUp7jI6TSq2hTPm9NmROcgQZ4h61V12) or [follow the steps to clone the repo and push via clasp](https://github.com/mhawksey/appsheet-custom-studio-step-example/blob/main/README.md#method-a-deploy-with-clasp-recommended):
 
 2. **Install the Test Deployment**: Open the Apps Script project, go to **Deploy \> Test deployments**, select **Google Workspace Add-on**, and click **Install**.  
 3. **Use in Studio**: Head to [studio.workspace.google.com](https://studio.workspace.google.com/), add a step to any flow, and search for **"AppSheet Utilities for Studio"**.
