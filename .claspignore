@@ -2,6 +2,7 @@
 # Prevents uploading local configurations, documentation, and agent skills to Google Apps Script
 
 .env_ex.js
+src/.env.js
 **/.env_ex.js
 .clasp.json
 .git/**

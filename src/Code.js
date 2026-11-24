@@ -143,16 +143,37 @@ function onFetchTableFields(event) {
 }
 
 /**
+ * Creates an Error flagged as actionable (user-fixable configuration/input error).
+ * @param {string} message - Human-readable error message.
+ * @returns {Error} Error instance with isActionable = true.
+ */
+function createActionableError(message) {
+  const err = new Error(message);
+  err.isActionable = true;
+  return err;
+}
+
+/**
  * A helper function to build the dedicated error response object using AddOnsResponseService.
  * @param {string} errorMessage - The error message to display in the log.
+ * @param {boolean} [isActionable=false] - Whether the user can fix the error by updating step inputs.
+ * @param {boolean} [isRetryable=false] - Whether Workspace Studio should automatically retry the step.
  * @returns {object} The error action object for Flows.
  */
-function buildErrorResponse(errorMessage) {
+function buildErrorResponse(errorMessage, isActionable = false, isRetryable = false) {
   const textElement = AddOnsResponseService.newTextFormatElement().setText(errorMessage);
   const textFormat = AddOnsResponseService.newWorkflowTextFormat().addTextFormatElement(textElement);
   const workflowAction = AddOnsResponseService.newReturnElementErrorAction()
-    .setErrorActionability(AddOnsResponseService.ErrorActionability.NOT_ACTIONABLE)
-    .setErrorRetryability(AddOnsResponseService.ErrorRetryability.NOT_RETRYABLE)
+    .setErrorActionability(
+      isActionable
+        ? AddOnsResponseService.ErrorActionability.ACTIONABLE
+        : AddOnsResponseService.ErrorActionability.NOT_ACTIONABLE
+    )
+    .setErrorRetryability(
+      isRetryable
+        ? AddOnsResponseService.ErrorRetryability.RETRYABLE
+        : AddOnsResponseService.ErrorRetryability.NOT_RETRYABLE
+    )
     .setErrorLog(textFormat);
 
   const hostAppAction = AddOnsResponseService.newHostAppAction()
@@ -172,7 +193,7 @@ function onConfigAddRows() {
     "textInput": {
       "name": "rowsData",
       "label": "Rows to Add (JSON format - Optional if dynamic fields are used)",
-      "hintText": "e.g., [{\"Column1\": \"Value A\"}, {\"Column1\": \"{{a_variable}}\"}]",
+      "hintText": "e.g., [{\"Column1\": \"Value A\", \"Notes\": \"\"\"{{variable}}\"\"\"}] (triple quotes optional for raw multiline/Markdown)",
       "hostAppDataSource": { "workflowDataSource": { "includeVariables": true } },
       "type": "MULTIPLE_LINE"
     }
@@ -189,7 +210,7 @@ function onConfigUpdateRows() {
     "textInput": {
       "name": "rowsData",
       "label": "Rows to Update (JSON format - Optional if dynamic fields are used)",
-      "hintText": "Each object must contain the table's key. e.g., [{\"KeyColumn\": 1, \"DataColumn\": \"New Value\"}]",
+      "hintText": "Must include key column. e.g., [{\"Key\": 1, \"Notes\": \"\"\"{{variable}}\"\"\"}] (triple quotes optional for raw multiline/Markdown)",
       "hostAppDataSource": { "workflowDataSource": { "includeVariables": true } },
       "type": "MULTIPLE_LINE"
     }
@@ -317,6 +338,508 @@ function safeCacheRow(resourceId, rowData, ttlSeconds = 21600) {
 }
 
 /**
+ * Strips an outer Markdown code fence (e.g. ```json ... ```) if the entire payload is wrapped in one.
+ * @param {string} text - Trimmed input text.
+ * @returns {string} Unwrapped text, or original text if not wrapped in a fence.
+ */
+function stripMarkdownCodeFences(text) {
+  const match = text.match(/^```(?:[a-zA-Z0-9_-]*)?[ \t]*\r?\n([\s\S]*?)\r?\n?[ \t]*```$/);
+  return match ? match[1].trim() : text;
+}
+
+/**
+ * Advances past JSON structural whitespace (including NBSP and BOM from copy-paste).
+ * @param {string} str - Input text.
+ * @param {number} pos - Starting index.
+ * @returns {number} Index of the next non-whitespace character, or str.length.
+ */
+function skipJsonWhitespace(str, pos) {
+  let p = pos;
+  while (p < str.length) {
+    const ch = str[p];
+    if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\u00A0' || ch === '\uFEFF') {
+      p++;
+    } else {
+      break;
+    }
+  }
+  return p;
+}
+
+/**
+ * Checks whether what immediately follows a primitive JSON value (number/boolean/null)
+ * is structurally valid for the enclosing container.
+ * @param {string} str - Input text.
+ * @param {number} posAfterPrimitive - Index immediately after the primitive token.
+ * @param {Array<string>} stack - Stack of open containers ('{' or '[').
+ * @param {number} lookaheadBudget - Remaining recursive lookahead steps to guarantee O(1) work.
+ * @returns {boolean} True if valid delimiter follows the primitive.
+ */
+function isValidPrimitiveFollow(str, posAfterPrimitive, stack, lookaheadBudget) {
+  const after = skipJsonWhitespace(str, posAfterPrimitive);
+  const container = stack.length > 0 ? stack[stack.length - 1] : null;
+  if (container === null) {
+    return after === str.length;
+  }
+  if (after >= str.length) return false;
+  const ch = str[after];
+  if (container === '{') {
+    if (ch === '}') {
+      return isValidAfterContainerClose(str, after + 1, stack, stack.length - 1);
+    }
+    if (ch === ',') {
+      const afterComma = skipJsonWhitespace(str, after + 1);
+      if (afterComma < str.length && str[afterComma] === '}') {
+        return isValidAfterContainerClose(str, afterComma + 1, stack, stack.length - 1);
+      }
+      if (lookaheadBudget <= 0) return true;
+      return isValidObjectKeyAhead(str, afterComma, stack, lookaheadBudget - 1);
+    }
+    return false;
+  }
+  if (container === '[') {
+    if (ch === ']') {
+      return isValidAfterContainerClose(str, after + 1, stack, stack.length - 1);
+    }
+    if (ch === ',') {
+      const afterComma = skipJsonWhitespace(str, after + 1);
+      if (afterComma < str.length && str[afterComma] === ']') {
+        return isValidAfterContainerClose(str, afterComma + 1, stack, stack.length - 1);
+      }
+      if (lookaheadBudget <= 0) return true;
+      return isValidJsonValueStart(str, afterComma, stack, lookaheadBudget - 1);
+    }
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Checks whether a valid JSON value starts at the next non-whitespace position.
+ * @param {string} str - Input text.
+ * @param {number} pos - Starting index.
+ * @param {Array<string>} [stack] - Stack of open containers ('{' or '[').
+ * @param {number} [lookaheadBudget=4] - Remaining recursive lookahead steps.
+ * @returns {boolean} True if a valid JSON value token begins at pos.
+ */
+function isValidJsonValueStart(str, pos, stack = [], lookaheadBudget = 4) {
+  const p = skipJsonWhitespace(str, pos);
+  if (p >= str.length) return false;
+  const ch = str[p];
+  if (ch === '"' || ch === '{' || ch === '[') return true;
+  if (ch === '-' || (ch >= '0' && ch <= '9')) {
+    const numRe = /-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+    numRe.lastIndex = p;
+    const match = numRe.exec(str);
+    if (!match) return false;
+    return isValidPrimitiveFollow(str, p + match[0].length, stack, lookaheadBudget);
+  }
+  if (str.startsWith('true', p) || str.startsWith('false', p) || str.startsWith('null', p)) {
+    const wordLen = ch === 'f' ? 5 : 4;
+    return isValidPrimitiveFollow(str, p + wordLen, stack, lookaheadBudget);
+  }
+  return false;
+}
+
+/**
+ * Checks whether a plausible JSON object key ("Key": <value>) starts at pos.
+ * @param {string} str - Input text.
+ * @param {number} pos - Starting index.
+ * @param {Array<string>} [stack] - Stack of open containers ('{' or '[').
+ * @param {number} [lookaheadBudget=4] - Remaining recursive lookahead steps.
+ * @returns {boolean} True if a single-line quoted key followed by ':' and a JSON value start is ahead.
+ */
+function isValidObjectKeyAhead(str, pos, stack = [], lookaheadBudget = 4) {
+  let p = skipJsonWhitespace(str, pos);
+  if (p >= str.length || str[p] !== '"') return false;
+  p++; // skip opening quote of key
+  while (p < str.length) {
+    const ch = str[p];
+    if (ch === '\\') {
+      p += 2;
+      continue;
+    }
+    if (ch === '\n' || ch === '\r') {
+      return false;
+    }
+    if (ch === '"') {
+      const afterKey = skipJsonWhitespace(str, p + 1);
+      if (afterKey >= str.length || str[afterKey] !== ':') {
+        return false;
+      }
+      return isValidJsonValueStart(str, afterKey + 1, stack, lookaheadBudget);
+    }
+    p++;
+  }
+  return false;
+}
+
+/**
+ * Checks whether tokens after closing a container ('}' or ']') are structurally valid
+ * for the enclosing parent container.
+ * @param {string} str - Input text.
+ * @param {number} pos - Index immediately after '}' or ']'.
+ * @param {Array<string>} stack - Stack of open containers ('{' or '[').
+ * @param {number} depth - Stack index of the container being closed.
+ * @returns {boolean} True if what follows is valid for the parent container.
+ */
+function isValidAfterContainerClose(str, pos, stack, depth) {
+  const p = skipJsonWhitespace(str, pos);
+  const parent = depth > 0 ? stack[depth - 1] : null;
+  if (parent === null) {
+    return p === str.length;
+  }
+  if (p >= str.length) return false;
+  const ch = str[p];
+  const parentStack = stack.slice(0, depth);
+  if (parent === '[') {
+    if (ch === ']') {
+      return isValidAfterContainerClose(str, p + 1, stack, depth - 1);
+    }
+    if (ch === ',') {
+      const afterComma = skipJsonWhitespace(str, p + 1);
+      if (afterComma < str.length && str[afterComma] === ']') {
+        return isValidAfterContainerClose(str, afterComma + 1, stack, depth - 1);
+      }
+      return isValidJsonValueStart(str, afterComma, parentStack);
+    }
+    return false;
+  }
+  if (parent === '{') {
+    if (ch === '}') {
+      return isValidAfterContainerClose(str, p + 1, stack, depth - 1);
+    }
+    if (ch === ',') {
+      const afterComma = skipJsonWhitespace(str, p + 1);
+      if (afterComma < str.length && str[afterComma] === '}') {
+        return isValidAfterContainerClose(str, afterComma + 1, stack, depth - 1);
+      }
+      return isValidObjectKeyAhead(str, afterComma, parentStack);
+    }
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Checks whether a candidate closing quote at posAfterQuote is followed by a valid
+ * structural delimiter for the current JSON position.
+ * @param {string} str - Input text.
+ * @param {number} posAfterQuote - Index immediately after the closing quote (or triple quote).
+ * @param {Array<string>} stack - Stack of open containers ('{' or '[').
+ * @param {boolean} isKeyString - True if the string being closed is an object key.
+ * @returns {boolean} True if this quote validly closes the current string.
+ */
+function isValidClosingDelimiter(str, posAfterQuote, stack, isKeyString) {
+  const p = skipJsonWhitespace(str, posAfterQuote);
+  if (isKeyString) {
+    return p < str.length && str[p] === ':';
+  }
+  const container = stack.length > 0 ? stack[stack.length - 1] : null;
+  if (container === null) {
+    return p === str.length;
+  }
+  if (p >= str.length) return false;
+  const ch = str[p];
+  if (container === '{') {
+    if (ch === ',') {
+      const afterComma = skipJsonWhitespace(str, p + 1);
+      if (afterComma < str.length && str[afterComma] === '}') {
+        return isValidAfterContainerClose(str, afterComma + 1, stack, stack.length - 1);
+      }
+      return isValidObjectKeyAhead(str, afterComma, stack);
+    }
+    if (ch === '}') {
+      return isValidAfterContainerClose(str, p + 1, stack, stack.length - 1);
+    }
+    return false;
+  }
+  if (container === '[') {
+    if (ch === ']') {
+      return isValidAfterContainerClose(str, p + 1, stack, stack.length - 1);
+    }
+    if (ch === ',') {
+      const afterComma = skipJsonWhitespace(str, p + 1);
+      if (afterComma < str.length && str[afterComma] === ']') {
+        return isValidAfterContainerClose(str, afterComma + 1, stack, stack.length - 1);
+      }
+      return isValidJsonValueStart(str, afterComma, stack);
+    }
+    return false;
+  }
+  return false;
+}
+
+/**
+ * Locates the matching closing triple quote (""") for a raw string value.
+ * Verifies the closing delimiter structurally so embedded triple quotes or trailing
+ * quotes inside the value do not prematurely end the block.
+ * @param {string} str - Input text.
+ * @param {number} startPos - Index immediately after the opening '"""'.
+ * @param {Array<string>} stack - Stack of open containers ('{' or '[').
+ * @returns {number} Start index of the closing '"""', or -1 if not found.
+ */
+function findTripleQuoteClose(str, startPos, stack) {
+  let searchFrom = startPos;
+  while (searchFrom < str.length) {
+    const idx = str.indexOf('"""', searchFrom);
+    if (idx === -1) return -1;
+    if (isValidClosingDelimiter(str, idx + 3, stack, false)) {
+      return idx;
+    }
+    searchFrom = idx + 1;
+  }
+  return -1;
+}
+
+/**
+ * Repairs JSON payloads where Workspace Studio variable interpolation injected unescaped
+ * newlines, tabs, control characters, double quotes, invalid backslash escapes (e.g. Markdown),
+ * or optional triple-quoted raw strings ("""...""").
+ * @param {string} text - Raw JSON-like string payload.
+ * @returns {string} Repaired JSON string ready for JSON.parse().
+ */
+function repairJsonPayload(text) {
+  let out = "";
+  const stack = [];
+  let expectingKey = false;
+  let inString = false;
+  let isKeyString = false;
+
+  const len = text.length;
+  let i = 0;
+
+  while (i < len) {
+    const ch = text[i];
+
+    if (!inString) {
+      if (ch === '\uFEFF') {
+        i++;
+        continue;
+      }
+      if (ch === '\u00A0') {
+        out += ' ';
+        i++;
+        continue;
+      }
+      if (ch === '{') {
+        stack.push('{');
+        expectingKey = true;
+        out += ch;
+        i++;
+        continue;
+      }
+      if (ch === '[') {
+        stack.push('[');
+        expectingKey = false;
+        out += ch;
+        i++;
+        continue;
+      }
+      if (ch === '}' || ch === ']') {
+        if (stack.length > 0) stack.pop();
+        expectingKey = false;
+        out += ch;
+        i++;
+        continue;
+      }
+      if (ch === ':') {
+        expectingKey = false;
+        out += ch;
+        i++;
+        continue;
+      }
+      if (ch === ',') {
+        const nextNonWs = skipJsonWhitespace(text, i + 1);
+        if (nextNonWs < len && (text[nextNonWs] === '}' || text[nextNonWs] === ']')) {
+          i++;
+          continue;
+        }
+        expectingKey = stack.length > 0 && stack[stack.length - 1] === '{';
+        out += ch;
+        i++;
+        continue;
+      }
+      if (ch === '"') {
+        // Optional triple-quoted raw string support for values: """..."""
+        if (!expectingKey && text.startsWith('"""', i)) {
+          const closeIdx = findTripleQuoteClose(text, i + 3, stack);
+          if (closeIdx !== -1) {
+            const rawContent = text.slice(i + 3, closeIdx);
+            out += JSON.stringify(rawContent);
+            i = closeIdx + 3;
+            continue;
+          }
+        }
+        inString = true;
+        isKeyString = expectingKey;
+        out += '"';
+        i++;
+        continue;
+      }
+
+      out += ch;
+      i++;
+      continue;
+    }
+
+    // Inside a JSON string
+    const code = ch.charCodeAt(0);
+
+    // Escape raw control characters (U+0000 - U+001F), including newlines and tabs
+    if (code < 0x20) {
+      switch (ch) {
+        case '\n': out += '\\n'; break;
+        case '\r': out += '\\r'; break;
+        case '\t': out += '\\t'; break;
+        case '\b': out += '\\b'; break;
+        case '\f': out += '\\f'; break;
+        default: out += '\\u' + code.toString(16).padStart(4, '0'); break;
+      }
+      i++;
+      continue;
+    }
+
+    // Handle backslash escape sequences
+    if (ch === '\\') {
+      if (i + 1 >= len) {
+        out += '\\\\';
+        i++;
+        continue;
+      }
+      const next = text[i + 1];
+      if (next === '"') {
+        // Distinguish intentional \" inside text from a literal trailing \ right before closing "
+        if (isValidClosingDelimiter(text, i + 2, stack, isKeyString)) {
+          out += '\\\\';
+          i++;
+          continue;
+        }
+        out += '\\"';
+        i += 2;
+        continue;
+      }
+      if (next === '\\' || next === '/' || next === 'b' || next === 'f' || next === 'n' || next === 'r' || next === 't') {
+        out += '\\' + next;
+        i += 2;
+        continue;
+      }
+      if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(text.slice(i + 2, i + 6))) {
+        out += text.slice(i, i + 6);
+        i += 6;
+        continue;
+      }
+      // Invalid JSON escape (e.g. Markdown \#, \*, \_, or Windows paths C:\Users)
+      out += '\\\\';
+      i++;
+      continue;
+    }
+
+    // Handle double quote inside string: only close if structurally valid
+    if (ch === '"') {
+      if (isValidClosingDelimiter(text, i + 1, stack, isKeyString)) {
+        inString = false;
+        if (isKeyString) expectingKey = false;
+        isKeyString = false;
+        out += '"';
+      } else {
+        out += '\\"';
+      }
+      i++;
+      continue;
+    }
+
+    out += ch;
+    i++;
+  }
+
+  return out;
+}
+
+/**
+ * Validates and normalizes parsed JSON row data into an array of plain row objects.
+ * Accepts either an array of row objects or a single row object (automatically wrapped).
+ * @param {*} parsed - Parsed JSON value.
+ * @param {string} fieldLabel - Display label for error diagnostics.
+ * @returns {Array<object>} Normalized array of row objects.
+ */
+function normalizeParsedRows(parsed, fieldLabel) {
+  if (Array.isArray(parsed)) {
+    const allValidObjects = parsed.every(item => item !== null && typeof item === 'object' && !Array.isArray(item));
+    if (!allValidObjects) {
+      throw createActionableError(
+        `Invalid '${fieldLabel}': expected a JSON array of row objects (e.g., [{"Column": "Value"}]).`
+      );
+    }
+    return parsed;
+  }
+
+  if (parsed !== null && typeof parsed === 'object') {
+    return [parsed];
+  }
+
+  throw createActionableError(
+    `Invalid '${fieldLabel}': expected a JSON array of row objects (e.g., [{"Column": "Value"}]).`
+  );
+}
+
+/**
+ * Resiliently parses JSON row payloads from Workspace Studio inputs.
+ * 1. Tries strict JSON.parse() first (zero alteration for valid JSON).
+ * 2. Strips optional Markdown code fences (e.g. ```json ... ```).
+ * 3. Repairs unescaped newlines, tabs, quotes, invalid backslash escapes, trailing commas,
+ *    and optional triple-quoted raw strings ("""...""").
+ * 4. Normalizes single row objects ({...}) into single-element arrays ([{...}]).
+ * @param {string} rawInput - Raw input string from Studio.
+ * @param {string} [fieldLabel="rowsData"] - Field name for error messages.
+ * @returns {Array<object>} Parsed and normalized array of row objects.
+ */
+function parseRowsData(rawInput, fieldLabel = "rowsData") {
+  if (!rawInput || typeof rawInput !== "string") {
+    return [];
+  }
+
+  const trimmed = rawInput.trim();
+  if (!trimmed) {
+    return [];
+  }
+
+  // Stage 1: Fast path for already-valid JSON
+  try {
+    return normalizeParsedRows(JSON.parse(trimmed), fieldLabel);
+  } catch (strictErr) {
+    if (strictErr && strictErr.isActionable) {
+      throw strictErr;
+    }
+  }
+
+  // Stage 2: Unwrap optional Markdown code fences (e.g. Gemini JSON block)
+  const unfenced = stripMarkdownCodeFences(trimmed);
+  if (unfenced !== trimmed) {
+    try {
+      return normalizeParsedRows(JSON.parse(unfenced), fieldLabel);
+    } catch (fenceErr) {
+      if (fenceErr && fenceErr.isActionable) {
+        throw fenceErr;
+      }
+    }
+  }
+
+  // Stage 3: Stateful string & triple-quote repair pass
+  try {
+    const repaired = repairJsonPayload(unfenced);
+    return normalizeParsedRows(JSON.parse(repaired), fieldLabel);
+  } catch (repairErr) {
+    if (repairErr && repairErr.isActionable) {
+      throw repairErr;
+    }
+    throw createActionableError(
+      `Invalid JSON in '${fieldLabel}': ${repairErr.message}. Tip: Verify brackets/commas, or wrap multiline/complex variable values in triple quotes ("""...""").`
+    );
+  }
+}
+
+/**
  * Checks an AppSheet API response for errors and throws if invalid.
  * Handles HTTP Problem Details (RFC 7807/9110), JS Error objects, and library errors.
  * @param {object} response - The raw response from AppSheetApp.
@@ -324,19 +847,30 @@ function safeCacheRow(resourceId, rowData, ttlSeconds = 21600) {
  */
 function validateAppSheetResponse(response, expectedType) {
   if (!response) {
-    throw new Error("No response returned from AppSheet API.");
+    const err = new Error("No response returned from AppSheet API.");
+    err.isRetryable = true;
+    throw err;
   }
 
   if (response instanceof Error) {
-    throw new Error(`AppSheet API network or parse error: ${response.message}`);
+    const err = new Error(`AppSheet API network or parse error: ${response.message}`);
+    err.isRetryable = true;
+    throw err;
   }
 
-  // AppSheet Problem Details or library errors: { detail, Error, title, message }
+  // AppSheet Problem Details or library errors: { detail, Error, title, message, status }
   if (response.Error || response.detail) {
     const detailMsg = response.detail || response.Error;
     const title = response.title ? `[${response.title}] ` : "";
     const responseBody = response.ResponseBody ? ` | Body: ${response.ResponseBody}` : "";
-    throw new Error(`AppSheet API error: ${title}${detailMsg}${responseBody}`);
+    const err = new Error(`AppSheet API error: ${title}${detailMsg}${responseBody}`);
+    const status = Number(response.status);
+    if (status === 429 || (status >= 500 && status < 600)) {
+      err.isRetryable = true;
+    } else if (status >= 400 && status < 500) {
+      err.isActionable = true;
+    }
+    throw err;
   }
 
   if (expectedType === 'array' && !Array.isArray(response)) {
@@ -363,14 +897,14 @@ function onExecuteAddRows(event) {
     const tableName = inputs.tableName?.stringValues?.[0]?.trim();
 
     if (!appId || !accessKey || !tableName) {
-      throw new Error("Missing required inputs: 'App ID', 'Access Key', and 'Table Name' must all be provided.");
+      throw createActionableError("Missing required inputs: 'App ID', 'Access Key', and 'Table Name' must all be provided.");
     }
 
     let rows = [];
     const rowsDataInput = inputs.rowsData?.stringValues?.[0]?.trim();
 
     if (rowsDataInput) {
-      rows = JSON.parse(rowsDataInput);
+      rows = parseRowsData(rowsDataInput, "Rows to Add");
     } else {
       const dynamicRow = extractDynamicRowInputs(inputs);
       if (dynamicRow) {
@@ -379,7 +913,7 @@ function onExecuteAddRows(event) {
     }
 
     if (!rows || rows.length === 0) {
-      throw new Error("No row data supplied. Provide JSON in 'rowsData' or configure column fields.");
+      throw createActionableError("No row data supplied. Provide JSON in 'rowsData' or configure column fields.");
     }
 
     const AppSheet = new AppSheetApp(appId, accessKey);
@@ -401,7 +935,11 @@ function onExecuteAddRows(event) {
     return returnOutputVariables(variables, logMessage);
 
   } catch (e) {
-    return buildErrorResponse(`Failed to add rows. Error: ${e.toString()}`);
+    return buildErrorResponse(
+      `Failed to add rows. Error: ${e.message || e.toString()}`,
+      Boolean(e && e.isActionable),
+      Boolean(e && e.isRetryable)
+    );
   }
 }
 
@@ -418,14 +956,14 @@ function onExecuteUpdateRows(event) {
     const tableName = inputs.tableName?.stringValues?.[0]?.trim();
 
     if (!appId || !accessKey || !tableName) {
-      throw new Error("Missing required inputs: 'App ID', 'Access Key', and 'Table Name' must all be provided.");
+      throw createActionableError("Missing required inputs: 'App ID', 'Access Key', and 'Table Name' must all be provided.");
     }
 
     let rows = [];
     const rowsDataInput = inputs.rowsData?.stringValues?.[0]?.trim();
 
     if (rowsDataInput) {
-      rows = JSON.parse(rowsDataInput);
+      rows = parseRowsData(rowsDataInput, "Rows to Update");
     } else {
       const dynamicRow = extractDynamicRowInputs(inputs);
       if (dynamicRow) {
@@ -434,7 +972,7 @@ function onExecuteUpdateRows(event) {
     }
 
     if (!rows || rows.length === 0) {
-      throw new Error("No row data supplied. Provide JSON in 'rowsData' or configure column fields.");
+      throw createActionableError("No row data supplied. Provide JSON in 'rowsData' or configure column fields.");
     }
 
     const AppSheet = new AppSheetApp(appId, accessKey);
@@ -457,7 +995,11 @@ function onExecuteUpdateRows(event) {
     return returnOutputVariables(variables, logMessage);
 
   } catch (e) {
-    return buildErrorResponse(`Failed to update rows. Error: ${e.toString()}`);
+    return buildErrorResponse(
+      `Failed to update rows. Error: ${e.message || e.toString()}`,
+      Boolean(e && e.isActionable),
+      Boolean(e && e.isRetryable)
+    );
   }
 }
 
@@ -474,7 +1016,7 @@ function onExecuteFindRows(event) {
     const tableName = inputs.tableName?.stringValues?.[0]?.trim();
 
     if (!appId || !accessKey || !tableName) {
-      throw new Error("Missing required inputs: 'App ID', 'Access Key', and 'Table Name' must all be provided.");
+      throw createActionableError("Missing required inputs: 'App ID', 'Access Key', and 'Table Name' must all be provided.");
     }
 
     const selector = inputs.selector?.stringValues?.[0]?.trim();
@@ -489,14 +1031,7 @@ function onExecuteFindRows(event) {
 
     let rows = [];
     if (rowsData && rowsData !== "") {
-      try {
-        const parsed = JSON.parse(rowsData);
-        if (Array.isArray(parsed)) {
-          rows = parsed;
-        }
-      } catch (err) {
-        throw new Error(`Invalid JSON in 'Row Keys to Find': ${err.message}`);
-      }
+      rows = parseRowsData(rowsData, "Row Keys to Find");
     }
 
     const response = AppSheet.Find(tableName, rows, properties);
@@ -519,7 +1054,11 @@ function onExecuteFindRows(event) {
     return returnOutputVariables(variables, logMessage);
 
   } catch (e) {
-    return buildErrorResponse(`Failed to find rows. Error: ${e.toString()}`);
+    return buildErrorResponse(
+      `Failed to find rows. Error: ${e.message || e.toString()}`,
+      Boolean(e && e.isActionable),
+      Boolean(e && e.isRetryable)
+    );
   }
 }
 
